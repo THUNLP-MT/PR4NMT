@@ -37,7 +37,7 @@ class model(object):
 		sample, probs = self.get_sample(x.reshape((x.shape[0],1)), length, n_samples)
 		return numpy.asarray(sample, dtype = 'int64').transpose(), probs
 
-	def translate(self, x, beam_size = 10, return_array = False):
+	def translate(self, x, beam_size = 10, return_array = False, rerank = False):
 		'''
 			Decode with beam search.
 
@@ -60,7 +60,7 @@ class model(object):
 		c, state = self.get_context_and_init(x)
 		emb_y = numpy.zeros((1, self.config['dim_emb_trg']), dtype = 'float32')
 
-		for l in range(x.shape[0]*3):
+		for l in range(x.shape[0] * 3):
 			# get word probability
 			energy, ctx = self.get_probs(numpy.repeat(c, len(result), axis = 1), state, emb_y)
 			probs = tools.softmax(energy)
@@ -125,6 +125,18 @@ class model(object):
 
 		if len(result_eos) > 0:
 			# return the best translation
+			if rerank:
+				#reranking
+				for i in range(len(result_eos)):
+					feature_value = numpy.asarray([],dtype = 'float32')
+					for j in range(len(self.fls)):
+						fl = self.fls[j]
+						if isinstance(fl,featureListAttn):
+							fe =fl.getFeatures(xf, result_eos[i], [attentions_eos[i]])
+						else:
+							fe =fl.getFeatures(xf, result_eos[i])
+						feature_value = numpy.concatenate((feature_value, fe))
+					loss_eos[i] -= (feature_value * self.feature_weight.get_value()).sum()
 			return result_eos[numpy.argmin(loss_eos)]
 		elif beam_size > 100:
 			# double the beam size on failure
@@ -133,6 +145,9 @@ class model(object):
 		else:
 			logging.info('cannot find translation in beam size %d, try %d' % (beam_size, beam_size * 2))
 			return self.translate(x, beam_size = beam_size * 2)
+
+	def translate_rerank(self, x, beam_size = 10, return_array = False):
+		return self.translate(x, beam_size, return_array, rerank = True)
 
 	def save(self, path, data = None, mapping = None):
 		'''
@@ -186,7 +201,7 @@ class model(object):
 			if decode:
 				return values
 		except:
-			if self.config['MRT'] or self.config['semi_learning']:
+			if self.config['MRT'] or self.config['semi_learning'] or self.config['PR']:
 				# load from initialization model
 				logging.info('Initializing the model from ' + str(self.config['init_model']))
 				self.load(self.config['init_model'])
@@ -198,10 +213,11 @@ class RNNsearch(model):
 		The attention-based NMT model
 	'''
 
-	def __init__(self, config, name = ''):
+	def __init__(self, config, name = '', fls = None):
 		self.config = config
 		self.name = name
 		self.creater = LayerFactory()
+		self.fls = fls
 		self.trng = RandomStreams(numpy.random.randint(int(10e6)))
 
 	def sampling_step(self, state, prev, context):
@@ -257,8 +273,8 @@ class RNNsearch(model):
 		samples = result[1]
 		probs = result[2]
 		y_idx = tensor.arange(samples.flatten().shape[0]) * self.config['num_vocab_trg'] + samples.flatten()
-		probs = probs.flatten()[y_idx]
-		probs.reshape(samples.shape)
+		#probs = probs.flatten()[y_idx]
+		#probs = probs.reshape(samples.shape)
 		return samples, probs, updates
 
 	def build(self, verbose = False):
@@ -286,6 +302,16 @@ class RNNsearch(model):
 		self.initer = self.creater.createFeedForwardLayer(self.name + 'initer',
 			config['dim_rec_enc'], config['dim_rec_dec'], offset = True)
 
+		if self.fls:
+			fl_weight = []
+			for fl in self.fls:
+				fl_weight.append(fl.feature_weight)
+				print fl.feature_weight
+			fl_weight = numpy.concatenate(fl_weight)
+			self.feature_weight = theano.shared(fl_weight.astype('float32'), name = "feature_weight")
+			self.creater.params += [self.feature_weight]
+			self.feature_weight_dim = self.feature_weight.dimshuffle('x', 0)
+
 		# create input variables
 		self.x = tensor.matrix('x', dtype = 'int64') # size: (length, batchsize)
 		self.xmask = tensor.matrix('x_mask', dtype = 'float32') # size: (length, batchsize)
@@ -299,6 +325,10 @@ class RNNsearch(model):
 			self.MRTLoss = None
 			self.inputs = [self.x, self.xmask, self.y, self.ymask]
 
+		if config['PR']:
+			self.ans = tensor.scalar('ans', dtype = 'int64')
+			self.features = tensor.matrix('features', dtype = 'float32')
+			self.inputs += [self.features, self.ans]
 
 		# create computational graph for training
 		logging.info('Building computational graph')
@@ -340,6 +370,31 @@ class RNNsearch(model):
 			tmp *= self.MRTLoss
 			tmp = -tmp.sum()	
 			self.cost = tmp
+		elif config['PR'] and self.fls:
+			# calculate p
+			self.cost_per_sample = self.cost.sum(axis = 0)
+			self.cost_per_sample *= config['alpha_PR']
+			cost_min = self.cost_per_sample - self.cost_per_sample.min()
+			probs = tensor.exp(-cost_min)
+			log_probs = -cost_min - tensor.log(probs.sum())
+			probs /= probs.sum()
+			self.probs = log_probs
+			# calculate q
+			energy_q = self.features * self.feature_weight_dim
+			energy_q = energy_q.sum(axis = 1)
+			self.energy_q = energy_q
+			energy_q_min = energy_q - energy_q.max()
+			probs_q = tensor.exp(energy_q_min)
+			log_probs_q = energy_q_min - tensor.log(probs_q.sum())
+			
+			probs_q /= probs_q.sum()
+			self.probs_q = log_probs_q
+			# calculate KL divergence
+			cost_KL = tensor.exp(log_probs_q) * (log_probs_q - log_probs)
+			self.cost_KLs = cost_KL
+			self.cost_KL = cost_KL.sum()
+			self.cost_NMT = self.cost_per_sample[self.ans]
+			self.cost = config['lambda_PR'] * self.cost_KL + config['lambda_MLE'] * self.cost_NMT
 		else:
 			self.cost = self.cost.sum()
 

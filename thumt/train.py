@@ -10,6 +10,8 @@ from config import *
 from optimizer import adadelta, SGD, adam, adam_slowstart
 from data import DataCollection, getbatch
 from mrt_utils import getMRTBatch
+from pr_utils import getPRBatch, feature_word, feature_phrase, \
+					feature_length, feature_attention_coverage, feature_wordcount
 
 import cPickle
 import json
@@ -45,7 +47,7 @@ if __name__ == '__main__':
 		config = update_config(config, load_config(open(args.config, 'r').read()))
 	print_config(config)
 
-	if config['MRT']:
+	if config['MRT'] or config['PR']:
 		config['batchsize'] = 1  # the mini-batch size must be 1 for MRT
 
 	mapping = None
@@ -58,9 +60,19 @@ if __name__ == '__main__':
 	data = DataCollection(config)
 	logging.info('Done!\n')
 
+	if config['PR']:
+		logging.info('STEP 2.1 extra: Loading features')
+		fls = []
+		for fl in config['features_PR']:
+			fls.append(eval(fl)(config, data))
+		logging.info('Done!\n')
+
 	# build model
 	logging.info('STEP 2.2: Building model')
-	model = eval(config['model'])(config)
+	if config['PR']:
+		model = eval(config['model'])(config, fls = fls)
+	else:
+		model = eval(config['model'])(config)
 	model.build()
 	logging.info('Done!\n')
 
@@ -89,6 +101,9 @@ if __name__ == '__main__':
 				xm, ym = data.next_mono()
 				xm, xmask, ym, ymask = getbatch(xm, ym, config)
 				x, xmask, y, ymask, valid = model.get_inputs_batch(x, y, xm, ym)
+			if config['PR']:
+				assert config['batchsize'] == 1
+				x, xmask, y, ymask, features, ans = getPRBatch(x, xmask, y, ymask, config, model, data, fls)
 
 			# saving checkpoint
 			if data.num_iter % config['checkpoint_freq'] == 0:
@@ -110,7 +125,10 @@ if __name__ == '__main__':
 					# translating
 					while line != '':
 						line = line.strip()
-						result = model.translate(data.toindex_source(line.split(' ')))
+						if config['PR']:
+							result = model.translate_rerank(data.toindex_source(line.split(' ')))
+						else:
+							result = model.translate(data.toindex_source(line.split(' ')))
 						print >> valid_output, data.print_target(numpy.asarray(result))
 						valid_num += 1
 						if valid_num % 100 == 0:
@@ -139,6 +157,8 @@ if __name__ == '__main__':
 				cost, grad_norm = update_grads(x, xmask, y, ymask, MRTLoss)
 			elif config['semi_learning']:
 				cost, grad_norm = update_grads(x, xmask, y, ymask, y, ymask, x, xmask, valid)
+			elif config['PR']:
+				cost, grad_norm = update_grads(x, xmask, y, ymask, features, ans)
 			else:
 				cost, grad_norm = update_grads(x, xmask, y, ymask)
 			# NaN processing

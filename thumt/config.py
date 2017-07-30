@@ -90,6 +90,33 @@ def config():
 	config['semi_sampleN'] = 10
 	config['sample_num'] = 10
 
+	# PR
+	# --basic--
+	config['PR'] = False
+	config['sampleN_PR'] = 80
+	config['LenRatio_PR'] = 1.5
+	config['sample_attn'] = False
+	# --hyper parameter--
+	config['lambda_PR'] = 0.0001
+	config['lambda_MLE'] = 0.0004
+	config['alpha_PR'] = 0.2
+	# --features--
+	config['features_PR'] = ['feature_word']
+	# -word-
+	config['word_table'] = ''
+	config['feature_weight_word'] = 1.
+	# -phrase-
+	config['phrase_table'] = ''
+	config['max_phrase_length'] = 4
+	config['feature_weight_phrase'] = 1.
+	# -length-
+	config['length_ratio'] = 1.236 #source*ratio=target
+	config['feature_weight_length_ratio'] = 1.
+	# -wordcount-
+	config['feature_weight_wordcount'] = 1.
+	# -attention-
+	config['feature_weight_attention_coverage'] = 1.
+
 	# validaiation and test
 	config['valid_dir'] = 'validation'
 	config['test_dir'] = 'eval'
@@ -98,6 +125,8 @@ def config():
 	config['test_src'] = []
 	config['test_ref'] = []
 	config['beam_size'] = 10
+
+
 
 	return config
 

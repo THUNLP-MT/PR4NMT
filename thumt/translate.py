@@ -9,6 +9,8 @@ from layer import LayerFactory
 from config import * 
 from optimizer import adadelta, SGD
 from data import *
+from pr_utils import getPRBatch, feature_word, feature_phrase, \
+					feature_length, feature_attention_coverage, feature_wordcount
 
 import cPickle
 import json
@@ -56,6 +58,13 @@ if __name__ == "__main__":
 	data.ivocab_trg = json.loads(str(values['ivocab_trg']))
 	data.encode_vocab()
 
+	if config['PR']:
+		fls = []
+		for fl in config['features_PR']:
+			fls.append(eval(fl)(config, data))
+			model = eval(config['model'])(config, fls = fls)
+			model.build()
+
 	try:
 		mapping = json.loads(str(values['mapping']))
 		mapping = {i.encode('utf-8'): mapping[i].encode('utf-8') for i in mapping}
@@ -85,7 +94,10 @@ if __name__ == "__main__":
 			result = numpy.transpose(data.toindex_target(result))[0]
 		else:
 			# translate
-			result = model.translate(src_index)
+			if config['PR']:
+				result = model.translate_rerank(src_index)
+			else:
+				result = model.translate(src_index)
 			result = numpy.asarray(result)
 		if args.unk_replace:
 			# replace unknown words

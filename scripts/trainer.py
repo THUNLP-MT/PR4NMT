@@ -5,7 +5,7 @@ import os
 import types
 import datetime
 
-root_dir = '/data/disk1/private/ly/THUMT'
+root_dir = '/Users/zhangjiacheng/Desktop/Grit/git/PR4NMT'
 code_dir = root_dir + '/thumt'
 
 def version():
@@ -32,8 +32,11 @@ def help():
 		'                                    0: maximum likelihood estimation (default)\n' + \
 		'                                    1: minimum risk training\n' + \
 		'                                    2: semi-supervise training\n' + \
+		'                                    3: posterior regularization\n' + \
 		'  --mono-src-file <file>          monilingual training set, source file\n' + \
 		'  --mono-trg-file <file>          monilingual training set, target file\n' + \
+		'  --word-table-file <file>        the word table used in PR\n' + \
+		'  --phrase-table-file <file>      the phrase table used in PR\n' + \
 		'  --init-model-file <file>        initialization model file\n' + \
 		'  --replace-unk {0, 1}            replacing unknown words\n' + \
 		'                                    0: off\n' + \
@@ -56,6 +59,8 @@ def convert_config_format(training_criterion, \
 						  vld_trg_file, \
 						  mono_src_file, \
 						  mono_trg_file, \
+						  word_table_file, \
+						  phrase_table_file, \
 						  init_model_file, \
 						  debug, \
 						  output_file):
@@ -67,10 +72,15 @@ def convert_config_format(training_criterion, \
 	elif training_criterion == 1:
 		d['MRT'] = True
 		d['semi_learning'] = False
-	else:
+	elif training_criterion == 2:
 		d['MRT'] = False
 		d['semi_learning'] = True
-		d['model'] = 'BiRNNsearch'
+		d['model'] = 'BiRNNsearch'	
+	else:
+		d['MRT'] = False
+		d['semi_learning'] = False
+		d['PR'] = True
+		
 	d['src_text'] = trn_src_file
 	d['trg_text'] = trn_trg_file
 	d['valid_src'] = vld_src_file
@@ -105,6 +115,10 @@ def convert_config_format(training_criterion, \
 		d['trg_mono_text'] = mono_trg_file
 		d['trg_mono'] = 'corpus/mono.en.json'
 		d['trg_mono_shuf'] = 'corpus/mono.en.json.shuf'
+
+	# PR
+	d['word_table'] = word_table_file
+	d['phrase_table'] = phrase_table_file
 
 	f1 = open(config_file, 'r')
 	while True:
@@ -175,6 +189,21 @@ def convert_config_format(training_criterion, \
 			d['save_freq'] = int(line.split(']')[-1].strip()) 
 		elif '[checkpoint iteration]' in line:
 			d['checkpoint_freq'] = int(line.split(']')[-1].strip()) 
+		# parameters for PR
+		elif '[PR sample size]' in line:
+			d['sampleN_PR'] = int(line.split(']')[-1].strip())
+		elif '[PR length ratio limit]' in line:
+			d['LenRatio_PR'] = float(line.split(']')[-1].strip())
+		elif '[features for PR]' in line:
+			features = ['feature_word', 'feature_phrase', 'feature_length', 'feature_attention_coverage']
+			numbers = [int(number) for number in line.split(']')[-1].strip().split(' ')]
+			d['features_PR'] = [features[number] for number in numbers]
+			if 3 in numbers:
+				d['sample_attn'] = True
+		elif '[PR weight]' in line:
+			d['lambda_PR'] = float(line.split(']')[-1].strip())
+		elif '[MLE weight]' in line:
+			d['lambda_MLE'] = float(line.split(']')[-1].strip()) / 0.2
 	# generate configuation file in the internal format
 	f2 = open(output_file, 'w')
 	for key in d:
@@ -200,6 +229,8 @@ if __name__ == '__main__':
 	save_all = 0             # saving all intermediate models
 	mono_src_file = ''       # monolingual training set, source file
 	mono_trg_file = ''       # monolingual training set, target file
+	word_table_file = ''     # the word table used in PR
+	phrase_table_file = ''   # the phrase table used in PR
 	init_model_file = ''     # initialization model file
 	debug = 0                # debug
 	# analyze command-line arguments
@@ -227,6 +258,10 @@ if __name__ == '__main__':
 			mono_src_file = sys.argv[i + 1]
 		elif sys.argv[i] == '--mono-trg-file':
 			mono_trg_file = sys.argv[i + 1]
+		elif sys.argv[i] == '--word-table-file':
+			word_table_file = sys.argv[i + 1]
+		elif sys.argv[i] == '--phrase-table-file':
+			phrase_table_file = sys.argv[i + 1]
 		elif sys.argv[i] == '--init-model-file':
 			init_model_file = sys.argv[i + 1]
 		elif sys.argv[i] == '--debug':
@@ -252,6 +287,8 @@ if __name__ == '__main__':
 						  vld_trg_file, \
 						  mono_src_file, \
 						  mono_trg_file, \
+						  word_table_file, \
+						  phrase_table_file, \
 						  init_model_file, \
 						  debug, \
 			              '_config')
@@ -279,7 +316,7 @@ if __name__ == '__main__':
 			  ',lib.cnmem=0.5 python ' + code_dir + \
 			  '/train.py -c _config' + optional)
 	# clean
-	os.system('rm _config')
+	# os.system('rm _config')
 	# show training time
 	te = datetime.datetime.now()
 	print 'The training started at ' + tb.strftime("%Y-%m-%d %H:%M:%S") + \
